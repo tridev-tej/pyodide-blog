@@ -1,5 +1,5 @@
 ---
-title: "Python runtimes for agent tools"
+title: "Choosing a Python runtime for a browser assistant"
 date: 2026-10-27T00:00:00+04:00
 draft: true
 author: ["Tejesh Vaish"]
@@ -8,7 +8,11 @@ showToc: true
 comments: false
 ---
 
-Suppose you're building an analyst assistant in the browser and want to give it a Python tool. Start with `values = [2, 3, 5]`. Can the tool run this expression from `lab/task.py` and send back the count and sum?
+If you're building an analyst assistant in the browser, choose its Python runtime around the operation you need. Can the required packages work with data supplied by the browser, or does the operation need host libraries and operating system access? The answer helps you choose where the tool runs and what access the application gives it.
+
+The [comparison lab](https://github.com/tridev-tej/technical-blog-examples/tree/686143f355958964e6ca9eaf4342823abf7f50f6/pyodide) runs the same calculation in browser Pyodide, native CPython in a child process, and Monty. Fixed code keeps language-model behavior out of the comparison so you can inspect how the application supplies data and handles results. The cases don't establish a performance ranking or containment of arbitrary code.
+
+The starting calculation in `lab/task.py` uses `values = [2, 3, 5]`:
 
 ```python
 {
@@ -17,27 +21,56 @@ Suppose you're building an analyst assistant in the browser and want to give it 
 }
 ```
 
-Pyodide returned `{"count": 3, "sum": 10}`. A separate test loaded NumPy 2.4.6 and got 10 from the same values. Both calculations ran in the browser because Pyodide runs CPython compiled for WebAssembly.
+All three runtimes returned `{"count": 3, "sum": 10}`. A separate browser case loaded NumPy 2.4.6 and returned 10 for the sum of the same values. The lab also tries a file read and a stuck loop, then checks that the calculation works in a fresh runtime.
 
-Native CPython and Monty got the same answer from the same expression. The native case runs in a child process on the host. Monty is an interpreter, and the app embedding it decides which operations to expose.
+## Run the comparison
 
-The test script uses fixed inputs and runs on its own, without an assistant or language model. The NumPy case is specific to Pyodide. You can find the setup and exact settings in the [complete source](https://github.com/tridev-tej/technical-blog-examples/tree/686143f355958964e6ca9eaf4342823abf7f50f6/pyodide) and [README](https://github.com/tridev-tej/technical-blog-examples/blob/686143f355958964e6ca9eaf4342823abf7f50f6/pyodide/README.md).
+Use a fresh directory on Linux x86_64 with Git, CPython 3.13.14, pip, curl, and `sha256sum`. Keep Python assertions enabled. Browser cases need module workers. The [README](https://github.com/tridev-tej/technical-blog-examples/blob/686143f355958964e6ca9eaf4342823abf7f50f6/pyodide/README.md) documents the setup.
 
-For a browser-based assistant, I'd start with Pyodide if the packages I need can work with the data the app passes in. If the tool needs host-native libraries or operating system (OS) integration, I'd look at native CPython. I'd consider Monty if it supports the Python I need and the app can handle any work that needs to happen on the host.
+Clone and pin the source, then run these commands in order. Stop if a command fails and fix its cause. Before setup, check that `python3.13 --version` prints `Python 3.13.14`.
 
-## Test the package operation
+```sh
+git clone https://github.com/tridev-tej/technical-blog-examples.git
+cd technical-blog-examples
+git checkout --detach 686143f355958964e6ca9eaf4342823abf7f50f6
+cd pyodide
+sha256sum -c MANIFEST.sha256
+python3.13 --version
+sh commands/01-setup.sh
+cd lab
+sh ../commands/08-run-native.sh
+sh ../commands/09-stage-assets.sh
+```
 
-Pyodide's [FAQ](https://pyodide.org/en/stable/usage/faq.html) distinguishes pure-Python wheels from C, Fortran and Rust extensions that need compatible Pyodide builds. A host-native wheel can't replace a browser build. The [Rust/PyO3 post](https://blog.pyodide.org/posts/rust-pyo3-support-in-pyodide/) explains the target and linking constraints; the [314 release](https://blog.pyodide.org/posts/314-release/) describes the PyEmscripten package platform.
+Setup creates `.venv` beside `lab`; its internal `cd` doesn't change your shell's directory, so keep the explicit `cd lab`. The `08-run-native.sh` script prepares `fixture.json` and `marker.txt`, then runs five native cases and five Monty cases. Each sequence runs the calculation, a default file read, a supplied read, a loop, and the calculation again in fresh state. Both calculation results must have count 3 and sum 10.
 
-Once the import works, try the operation you actually need. If your code starts a thread or launches another process, test that call. The FAQ lists restrictions on threads, multiprocessing and subprocesses, and a successful import or system information query tells you little about whether those calls work. Native CPython uses the host's package ecosystem, so the interpreter, OS and binaries still have to match. Host-native dependencies and launching executables were outside the test.
+Check that loopback port 43126 is free, then serve from the same `lab` directory:
 
-Monty can share state across code submissions, called feeds, within a session. The application embedding Monty is the host; code running inside the interpreter is the guest. Check that the calculation fits Monty's supported Python. Its [1.3.0 security document](https://raw.githubusercontent.com/pydantic/monty/v1.3.0/docs/security.md) specifies no guest foreign function interface (FFI) or native-code dependencies. A callback, or host function exposed to the guest, can use a host package. An exposed host module can too. That work runs on the host and doesn't add native-extension support to the guest.
+```sh
+sh ../commands/13-serve.sh
+```
 
-## What can each runtime read?
+Open `http://127.0.0.1:43126/` and click **Run fixed cases**. Retain the seven JSON rows and any browser errors. These cases add a JavaScript property read and NumPy to the five-case sequence. Check that `marker.txt` still matches the marker in `fixture.json`. The server exposes only `lab/`; stop it with Ctrl-C.
 
-The file test uses a small marker with known text, so the caller can check the reply. Native CPython reads the file from its path on the host. The child inherits its parent's permissions and runs without an OS filesystem sandbox. Despite the name, `marker_grant` performs the same read with the same permissions as `marker_default`.
+Some cases expect a file error or timeout. The checks require the specific outcomes below; an unrelated failure doesn't count as success.
 
-What happens if you pass the same path to Pyodide in the browser? This is what the worker sent back.
+The selected versions are native CPython 3.13.14, Pyodide 314.0.7 reporting Python 3.14.2, and [pydantic-monty](https://pypi.org/project/pydantic-monty/1.3.0/), `pydantic-monty-client`, and `pydantic-monty-runtime` at 1.3.0. For this revision, all ten native and Monty cases passed in a new Linux virtual environment using an existing CPython installation. All seven browser cases and ten reply-shape checks passed in Chrome 149. The README's fresh-install caveat predates this check. These results cover the fixed cases; your package operation still needs its own check.
+
+## Check the operation your package needs
+
+Pyodide runs CPython compiled for WebAssembly. Its [FAQ](https://pyodide.org/en/stable/usage/faq.html) distinguishes pure-Python wheels from C, Fortran, and Rust extensions that need compatible Pyodide builds. A host-native wheel can't replace a browser build. The [Rust/PyO3 post](https://blog.pyodide.org/posts/rust-pyo3-support-in-pyodide/) explains the target and linking constraints; the [314 release](https://blog.pyodide.org/posts/314-release/) describes the PyEmscripten package platform.
+
+Once an import works, exercise the operation your tool needs. If it starts a thread or launches a subprocess, test that call against the restrictions in the FAQ. An import or system information query doesn't establish that those operations work. NumPy was tested only in the browser, with one calculation; package parity is outside this comparison.
+
+Native CPython uses the host's package ecosystem, so its interpreter, operating system, and binaries still need to match. I'd consider it for a tool that needs a host-native library or executable. Those dependencies and executable launches were outside this test.
+
+Monty is an interpreter. A code submission is called a feed, and a session can retain state across feeds. Check that your calculation fits its supported Python. The embedding application is the host; Python inside Monty is the guest. Its [1.3.0 security document](https://raw.githubusercontent.com/pydantic/monty/v1.3.0/docs/security.md) specifies no guest foreign function interface (FFI) or native-code dependencies. A callback or exposed host module can use a host package. That work runs on the host and doesn't add native-extension support to the guest.
+
+## Give the tool the data it needs
+
+The file cases use a marker with known text. Native CPython reads it from the host path with its parent's ordinary permissions, without an operating system filesystem sandbox. The two scenarios, `marker_default` and `marker_grant`, perform the same host read. The second name doesn't mean that the application granted new permissions.
+
+Passing the host pathname to browser Pyodide produces this reply, with fields omitted for brevity:
 
 ```json
 {
@@ -46,92 +79,79 @@ What happens if you pass the same path to Pyodide in the browser? This is what t
 }
 ```
 
-The marker is missing from the browser filesystem. The adapter catches the exception and returns the string `"FileNotFoundError"`, which the test accepts as the expected result. This case only checks a browser file lookup. Showing that a host read was denied would require a different test.
+The file is missing from the browser filesystem. The adapter catches `FileNotFoundError` and returns its name as a successful result. This checks a missing-file lookup; it doesn't demonstrate denial of a host read.
 
-Monty returns an error because the guest has no read operation available.
-
-```json
-{
-  "status": "error",
-  "phase": "feed_run",
-  "wrapper_type": "MontyRuntimeError",
-  "error_type": "PermissionError"
-}
-```
-
-Both replies show selected fields. At `feed_run`, Monty wraps the built-in `PermissionError` in a `MontyRuntimeError`. The pathname gives each runtime only a name. To make the reads work, give browser Pyodide the file bytes or expose a host read operation to Monty.
+Monty's default read has no exposed read operation. At `feed_run`, it returns a `MontyRuntimeError` wrapping built-in `PermissionError`. The next case supplies a zero-argument `read_marker()` callback. The host chooses the file and reads it with its own process permissions. A callback accepting a path from the guest would let the guest choose which file the host reads. Keep path selection with the host when the tool only needs one file.
 
 ![Interfaces used by the three lab environments](/images/python-execution-authority.svg)
 
-The diagram shows the interfaces used in this lab. These tests don't establish general sandbox guarantees. Exposed JavaScript and host callbacks add the access described here.
-
-If your Python code expects a file, copy the marker into Pyodide's default in-memory [MEMFS filesystem](https://pyodide.org/en/stable/usage/file-system.html). You can also pass the text as a JavaScript property and read it from Python. Here are the two worker functions. The surrounding module initializes Pyodide.
+For browser Python that expects a file, copy the bytes into Pyodide's default in-memory [MEMFS filesystem](https://pyodide.org/en/stable/usage/file-system.html). If Python needs only text, the application can supply a JavaScript property. These functions come from `lab/worker.mjs`; the surrounding module initializes Pyodide:
 
 ```javascript
 function markerGrant(message) {
-  pyodide.FS.writeFile(
-    "/marker.txt",
-    message.marker
-  );
-  return pyodide.runPython(
-    "open('/marker.txt').read()"
-  );
+  pyodide.FS.writeFile("/marker.txt", message.marker);
+  return pyodide.runPython("open('/marker.txt').read()");
 }
 
 function bridge(message) {
-  globalThis.labMarker =
-    message.marker;
-  return pyodide.runPython(
-    `from js import labMarker
-str(labMarker)`
-  );
+  globalThis.labMarker = message.marker;
+  return pyodide.runPython("from js import labMarker\nstr(labMarker)");
 }
 ```
 
-The MEMFS copy lives in memory and lasts only as long as that filesystem does. The host directory stays outside it.
+The MEMFS copy lasts only as long as that filesystem does and doesn't mount the host directory. Imports from `js` use the worker's existing `globalThis`, as the [314.0.7 interop guide](https://pyodide.org/en/314.0.7/usage/type-conversions.html) explains. Adding `labMarker` leaves other worker globals reachable, so review what that environment exposes. A custom Python globals dictionary changes the Python namespace without revoking that JavaScript access.
 
-The JavaScript route gives Python access to the worker's existing JavaScript environment. When you import from `js`, Pyodide looks in `globalThis`, as the [314.0.7 interop guide](https://pyodide.org/en/314.0.7/usage/type-conversions.html) explains. Adding `labMarker` leaves other globals reachable. A custom Python globals dictionary only changes the Python namespace. The bridge test covers one property read. The page DOM, credentials, network services and host files are outside its scope.
+The bridge case checks one property read. The page DOM, credentials, network services, and host files are outside its scope. The diagram describes these interfaces, with no general sandbox guarantee. An operating system sandbox around the worker would need separate verification.
 
-In the next Monty case, the guest gets a zero-argument `read_marker()` callback. The host picks the path and reads the file with its own process permissions, outside the interpreter. If the callback accepted a path from the guest, the guest could choose which file the host reads. The earlier denial came from Monty's rules about exposed operations. OS sandboxing of the worker would need its own test.
+The [mcp-run-python maintainers](https://raw.githubusercontent.com/pydantic/mcp-run-python/main/README.md) cite safety and latency concerns in retiring their tool. [langchain-sandbox](https://raw.githubusercontent.com/langchain-ai/langchain-sandbox/main/README.md) separately says it is unmaintained and advises against production use. Each notice concerns its own tool. When using Pyodide, inspect what the embedding JavaScript environment can do and which interfaces Python can reach.
 
-The [mcp-run-python maintainers](https://raw.githubusercontent.com/pydantic/mcp-run-python/main/README.md) cite safety and latency concerns in retiring their tool. [langchain-sandbox](https://raw.githubusercontent.com/langchain-ai/langchain-sandbox/main/README.md) separately says it is unmaintained and advises against production use. Each notice concerns its own tool; neither establishes a universal verdict on Pyodide.
+## Accept only the expected reply
 
-## Check replies before updating the application
+Your application still has to decide whether a result belongs to the active request and can update its state. Native CPython sends JSON over pipes, Pyodide sends worker messages, and Monty returns a feed result after any host calls. The browser's existing `lab/contract.mjs` validates the fixed calculation:
 
-Native CPython sends JSON over pipes, Pyodide sends worker messages, and Monty returns a feed result after any host calls. Whichever runtime you use, make sure the reply belongs to the active request. Both validators require a matching run ID, exact keys in the reply and its value, and an exact count of 3 and sum of 10. Using that fixed answer gives the caller an independent check. Running the task expression again to get the expected answer could repeat the same mistake.
+```javascript
+function exactKeys(value, keys) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  return Object.keys(value).sort().join() === keys;
+}
 
-In JavaScript, an array can have named `count` and `sum` properties, and those properties can survive `structuredClone`. That's why the browser validator rejects arrays both as the reply envelope and as its value. The Python validator for native CPython and Monty requires exact dictionaries and integer types.
+export function acceptFixture(reply, runId, active) {
+  if (!active || !exactKeys(reply, "run_id,status,value")) return false;
+  if (reply.run_id !== runId || reply.status !== "result") return false;
+  const value = reply.value;
+  if (!exactKeys(value, "count,sum")) return false;
+  return value.count === 3 && value.sum === 10;
+}
+```
 
-The browser reader removes its listeners after one reply or a timeout, so a late answer can't satisfy a later call. These checks establish the accepted result for this fixed test; they don't prove arbitrary model answers correct.
+The validator requires an active request, matching run ID, and exact keys in both the envelope and value. Arrays can have named `count` and `sum` properties that survive `structuredClone`, so it rejects arrays at both levels. For the same calculation, `lab/contract.py` requires exact dictionaries and integer types in native CPython and Monty.
 
-## Give the whole request a deadline
+Count 3 and sum 10 form the independent expected answer, or oracle. Keep that expectation separate from the expression under test; evaluating the same expression again could repeat the same mistake. This checks one known answer. Generated answers need checks suited to the task.
 
-I'd start the clock as soon as the app starts gathering inputs and keep it running until the app accepts a reply. That gives you a deadline for setup and host calls too.
+The browser reader in `lab/main.mjs` removes its listeners after a reply or timeout so a late answer can't satisfy a later call. Preserve that lifecycle handling when adapting the result checks.
 
-In the browser test, fetching the data and reading its JSON body share one abort deadline. The worker gets a separate budget to start and load Pyodide. Then the case clock starts, which also covers loading NumPy. You can see the timers in `lab/main.mjs`. The [worker guide](https://pyodide.org/en/stable/usage/webworker.html) walks through initialization and messages.
+## Bound the request and replace stopped runs
 
-In the Linux test, the supervisor starts the child, writes to its input and closes it. Only then does the readiness clock start. The output clock starts once the child is ready. You need a deadline that also covers process creation and input handling. The gap is visible in the source. A startup hang wasn't reproduced. The [subprocess documentation](https://docs.python.org/3.13/library/subprocess.html#subprocess.Popen.communicate) also distinguishes creation from timed communication.
+I'd start an application deadline when the app begins gathering inputs and keep it running until the app accepts the reply. The lab uses separate clocks, so account for the gaps when adapting it.
 
-Monty's feed clock leaves out the time spent compiling the submitted code and pauses while it waits for the host. Each feed gets a fresh allowance, so set a deadline for the whole session too. Decide when to time out host operations and cancel outstanding host work when the session ends. The marker callback only reads a local file. A speed comparison would need equivalent timing, since the runtimes measure different parts of the request.
+In `lab/main.mjs`, fetching the fixture and reading its JSON body share one abort deadline. Worker startup and Pyodide loading get a separate budget, followed by the case clock, which also covers NumPy loading. The [worker guide](https://pyodide.org/en/stable/usage/webworker.html) explains initialization and messaging.
 
-## Budget memory separately
+In `lab/run_native.py`, process creation and input write/close happen before the readiness clock starts. Output gets its own clock after the child is ready. Include those earlier steps in your application's deadline; a startup hang wasn't reproduced here. The [subprocess documentation](https://docs.python.org/3.13/library/subprocess.html#subprocess.Popen.communicate) also distinguishes process creation from timed communication.
 
-The lab leaves Monty's `max_memory` unset. Browser Pyodide and native CPython run without a per-run memory cap, so memory limits are outside the test.
+Monty's feed clock excludes compilation of the submitted source and pauses during host calls. Each feed gets a fresh allowance, so give host work and the whole session deadlines too. Cancel outstanding host work when ending the session. The marker callback only reads a local file; it doesn't exercise slow host services. A speed comparison would need equivalent timing across the runtimes.
 
-If the application needs a memory bound, account for allocations outside the guest limit. Monty's [1.3.0 security guidance](https://raw.githubusercontent.com/pydantic/monty/v1.3.0/docs/security.md) defines its budget as requested allocator bytes, not process resident memory (RSS). Other allocation routes and host callback allocations stay outside that count and need separate accounting.
+Memory needs its own policy. This lab leaves Monty's `max_memory` unset and gives browser Pyodide and native CPython no per-run memory cap. Monty's [memory budget](https://raw.githubusercontent.com/pydantic/monty/v1.3.0/docs/security.md) counts requested allocator bytes, not process resident memory (RSS). Other allocation routes and host callback allocations need separate accounting.
 
-## Stop a run before replacing it
+The loop case checks whether execution can end before the next calculation. Browser and native runs reach the caller's outer timeout. Monty must return a `MontyRuntimeError` wrapping built-in `TimeoutError` at `feed_run`; an outer timeout doesn't satisfy that check. Stop the old execution before accepting a replacement request.
 
-What happens if the Python code gets stuck in a loop? In the browser and native tests, the caller's timeout fires. The Monty test requires a `MontyRuntimeError` wrapping the built-in `TimeoutError` at `feed_run`. That specific error tells you Monty's own feed limit fired. In each case, stop the old execution before starting the next request.
+Browser termination [aborts execution and discards queued tasks](https://html.spec.whatwg.org/multipage/workers.html#terminate-a-worker). The Linux supervisor cleans its owned process group for these benign children; processes that change group or session fall outside that cleanup. Neither mechanism promises hard real-time scheduling or adversarial containment.
 
-Browser termination [aborts execution and discards queued tasks](https://html.spec.whatwg.org/multipage/workers.html#terminate-a-worker). The Linux supervisor cleans its owned process group for these benign children. Processes that change group or session fall outside that cleanup. Neither mechanism promises hard real-time scheduling or adversarial containment.
+After each loop, the calculation worked again in a fresh worker, child process, or Monty session. Replacement starts with fresh state; recovery of interrupted state and rollback of completed work were outside the test. Monty's security guidance says to discard a session after a time or memory limit, including when using a pool.
 
-After each loop, the original calculation worked again in a fresh worker, child process or Monty session. The test covers restarting with fresh state. Recovery of interrupted state and rollback of completed work were outside its scope. If a Monty session hits a time or memory limit, discard it even if you're using a pool.
+## Adapt the lab to your tool
 
-## Versions and test coverage
+I'd start with Pyodide when browser-compatible packages can process the data the app supplies. Native CPython fits host-native libraries or operating system integration. Monty is worth considering when it supports the calculation and the application can provide any host operations it needs. The marker cases show what supplying data involves in each setup: copying bytes into the browser, reading with ordinary host permissions, or calling a host function.
 
-The selected versions are native CPython 3.13.14, Pyodide 314.0.7 reporting Python 3.14.2, and [pydantic-monty](https://pypi.org/project/pydantic-monty/1.3.0/), `pydantic-monty-client` and `pydantic-monty-runtime` at 1.3.0. The comparison covers five native cases, five Monty cases and seven browser cases.
+Start with the hardest package operation you need. `lab/task.py` holds a single expression; keep that form or change the adapters to handle statements. Put package setup in the adapters: `lab/worker.mjs` for Pyodide, `lab/native_guest.py` for native CPython, and `lab/monty_guest.py` for Monty host work. Update prepared inputs in `lab/run_native.py` and Monty's fixed input in `lab/monty_guest.py`. Inspect `lab/main.mjs` and `lab/run_native.py` for lifecycle handling.
 
-The Linux cases ran again with this source in an existing environment. The browser results are from the earlier run of the same browser code, including the corrected validator and ten separate checks of reply shape. A fresh install is still untested.
-
-If you're trying this in your own app, start with the hardest package operation you need. Give it data the way your app would, then check that the app accepts the reply. If your next calculation relies on state from this one, work out how you'll rebuild that state when a worker or session ends.
+Update both contract files with an independently calculated expected answer. If the result shape changes, update the exact-key checks too. Then run the cases again with data supplied the way your app will supply it. For a tool that retains state between requests, decide how to rebuild that state after a worker or session ends.
